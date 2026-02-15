@@ -51,7 +51,6 @@ def _format_line(voucher_code: str, data: Dict[str, Any]) -> str:
     return f"❌ {voucher_code} : {error_code}"
 
 def save_one_voucher_with_cookie(cookie: str, voucher: Dict[str, Any]) -> str:
-    """Lưu 1 voucher được chọn."""
     voucher_code = voucher.get("voucher_code", "VOUCHER")
 
     success_count = 0
@@ -82,7 +81,6 @@ def save_one_voucher_with_cookie(cookie: str, voucher: Dict[str, Any]) -> str:
     return "\n".join(logs)
 
 def save_all_vouchers_with_cookie(cookie: str) -> str:
-    """Lưu tất cả voucher trong vouchers.json (giữ output như cũ)."""
     vouchers = load_vouchers()
     if not vouchers:
         return "❌ Không có voucher trong vouchers.json"
