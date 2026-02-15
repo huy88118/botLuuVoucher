@@ -8,7 +8,6 @@ from flask import Flask
 from telegram import Update
 from telegram import ReplyKeyboardMarkup, KeyboardButton
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -21,7 +20,9 @@ from telegram.ext import (
 
 from voucher_service import save_one_voucher_with_cookie, save_all_vouchers_with_cookie
 
-# ----------------- Web keep-alive -----------------
+# =======================
+# Flask keep-alive (Render)
+# =======================
 web_app = Flask(__name__)
 
 @web_app.get("/")
@@ -36,12 +37,17 @@ def run_web():
     port = int(os.getenv("PORT", "10000"))
     web_app.run(host="0.0.0.0", port=port)
 
-# ----------------- Config -----------------
+# =======================
+# Config
+# =======================
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 VOUCHERS_JSON_PATH = os.getenv("VOUCHERS_JSON_PATH", "vouchers.json")
 
-WAIT_COOKIES = 1
+WAIT_COOKIES = 1  # conversation state
 
+# =======================
+# UI
+# =======================
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [[KeyboardButton("🔴 Lưu Voucher"), KeyboardButton("🔁 Convert SPC_F")]],
@@ -63,7 +69,7 @@ def inline_voucher_buttons(vouchers: List[Dict[str, Any]]) -> InlineKeyboardMark
         code = v.get("voucher_code") or name
         rows.append([InlineKeyboardButton(name, callback_data=f"pick:{code}")])
 
-    # thêm nút "lưu tất cả"
+    # nút lưu tất cả
     rows.append([InlineKeyboardButton("🧾 Lưu tất cả mã", callback_data="pick_all")])
     return InlineKeyboardMarkup(rows)
 
@@ -73,7 +79,9 @@ def find_voucher_by_code(vouchers: List[Dict[str, Any]], code: str) -> Optional[
             return v
     return None
 
-# ----------------- Handlers -----------------
+# =======================
+# Handlers
+# =======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ Menu:\nChọn chức năng bên dưới:",
@@ -106,7 +114,6 @@ async def pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data or ""
-    vouchers = load_vouchers()
 
     # chọn lưu tất cả
     if data == "pick_all":
@@ -122,7 +129,13 @@ async def pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAIT_COOKIES
 
     # chọn 1 voucher
-    _, code = data.split(":", 1)
+    vouchers = load_vouchers()
+    try:
+        _, code = data.split(":", 1)
+    except ValueError:
+        await query.message.reply_text("❌ Lựa chọn không hợp lệ. Bấm '🔴 Lưu Voucher' để chọn lại.")
+        return ConversationHandler.END
+
     picked = find_voucher_by_code(vouchers, code)
     if not picked:
         await query.message.reply_text("❌ Voucher không còn trong danh sách. Bấm '🔴 Lưu Voucher' để tải lại.")
@@ -177,19 +190,16 @@ async def receive_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not TOKEN:
-        raise RuntimeError("Thiếu TELEGRAM_BOT_TOKEN trong Environment Variables")
+        raise RuntimeError("Thiếu TELEGRAM_BOT_TOKEN trong Environment Variables (Render).")
 
+    # start flask thread
     threading.Thread(target=run_web, daemon=True).start()
 
     bot_app = ApplicationBuilder().token(TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(pick_callback, pattern=r"^(pick:|pick_all)")
-        ],
-        states={
-            WAIT_COOKIES: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies)]
-        },
+        entry_points=[CallbackQueryHandler(pick_callback, pattern=r"^(pick:|pick_all)")],
+        states={WAIT_COOKIES: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies)]},
         fallbacks=[],
         allow_reentry=True,
     )
@@ -199,7 +209,7 @@ def main():
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
 
     print("✅ Bot đang chạy...")
-    bot_app.run_polling()
+    bot_app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
