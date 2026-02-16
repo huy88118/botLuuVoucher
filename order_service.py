@@ -1,7 +1,8 @@
-import requests
 import json
-from typing import List, Dict, Any, Optional
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import requests
 
 BASE_URL = "https://us-central1-get-feedback-a0119.cloudfunctions.net/app"
 API_ENDPOINT = "/api/shopee/getOrderDetailsForCookie"
@@ -44,13 +45,6 @@ def _fmt_ts(ts: Any) -> str:
         return str(ts)
 
 
-def _fmt_money_from_api(v: Any) -> str:
-    try:
-        return f"{(float(v) / 100000):,.0f} đ"
-    except Exception:
-        return str(v)
-
-
 def _build_shopee_link(shop_id: Any, item_id: Any) -> Optional[str]:
     try:
         if shop_id and item_id:
@@ -60,33 +54,57 @@ def _build_shopee_link(shop_id: Any, item_id: Any) -> Optional[str]:
     return None
 
 
+def _safe_trim(s: Any, n: int) -> str:
+    s = "" if s is None else str(s)
+    return s if len(s) <= n else s[:n] + "..."
+
+
 def detect_carrier(tracking_number: str) -> str:
     if not tracking_number:
         return ""
 
-    tracking_number = tracking_number.upper()
+    t = tracking_number.upper()
 
-    if tracking_number.startswith("SPX"):
+    if t.startswith("SPX"):
         return "Shopee Express"
-    if tracking_number.startswith("GY") or tracking_number.startswith("GHN"):
+    if t.startswith("GY") or t.startswith("GHN"):
         return "Giao Hàng Nhanh"
-    if tracking_number.startswith("JNT"):
+    if t.startswith("JNT"):
         return "J&T Express"
-    if tracking_number.startswith("VNPOST"):
+    if t.startswith("VNPOST"):
         return "VNPost"
 
     return "Không xác định"
+
+
+def build_tracking_url(tracking_number: str) -> Optional[str]:
+    """Tạo link tra cứu theo hãng dựa trên prefix MVĐ."""
+    if not tracking_number:
+        return None
+
+    t = tracking_number.strip().upper()
+
+    # Shopee Express (ví dụ bạn đưa)
+    if t.startswith("SPX"):
+        return f"https://spx.vn/track?trackingNumber={t}"
+
+    # GHN (bạn đưa)
+    if t.startswith("GY") or t.startswith("GHN"):
+        return f"https://donhang.ghn.vn/?order_code={t}"
+
+    # Các hãng khác bạn có thể bổ sung sau
+    return None
 
 
 # ================= FORMATTER =================
 
 
 def format_orders_for_telegram(
-    data,
+    data: Dict[str, Any],
     max_orders_per_cookie: int = 10,
-    max_products_per_order: int = 5,
-):
-    messages = []
+    max_products_per_order: int = 10,
+) -> List[str]:
+    messages: List[str] = []
 
     accounts = data.get("allOrderDetails", [])
     if not accounts:
@@ -97,20 +115,17 @@ def format_orders_for_telegram(
         orders = account.get("orderDetails", []) or []
 
         if not orders:
-            messages.append(f"🍪 Cookie: `{cookie[:20]}...`\n❌ Không có đơn hàng.")
+            messages.append(f"🍪 Cookie: {cookie[:20]}...\n❌ Không có đơn hàng.")
             continue
 
-        text_blocks = []
-        header = f"🍪 Cookie: `{cookie[:20]}...`\n📦 Tổng đơn: {len(orders)}\n"
-        text_blocks.append(header)
+        blocks: List[str] = []
+        blocks.append(f"🍪 Cookie: {cookie[:20]}...")
+        blocks.append(f"📌 Tổng {len(orders)} đơn hàng")
 
-        for index, order in enumerate(orders[:max_orders_per_cookie], start=1):
-
+        for idx, order in enumerate(orders[:max_orders_per_cookie], start=1):
             order_id = order.get("order_id", "")
-            status = order.get("tracking_info_description", "")
-            tracking = order.get("tracking_number", "")
-            order_time = _fmt_ts(order.get("create_time"))
-
+            status = order.get("tracking_info_description", "") or ""
+            tracking = order.get("tracking_number", "") or ""
             carrier_name = detect_carrier(tracking)
 
             address = order.get("address", {}) or {}
@@ -120,87 +135,56 @@ def format_orders_for_telegram(
 
             products = order.get("product_info", []) or []
 
-            block = []
-            block.append(f"📦 Đơn {index} :")
+            blocks.append(f"\nĐƠN HÀNG {idx} : 🧾 Oder ID: {order_id}")
 
-            # Thời gian đặt
-            if order_time:
-                block.append(f"⏱ Thời gian đặt hàng: {order_time}")
+            # THÔNG TIN (dùng chữ đậm unicode tránh parse_mode)
+            blocks.append("ℹ️ 𝐓𝐇Ô𝐍𝐆 𝐓𝐈𝐍")
+            if name:
+                blocks.append(f"👤 Người nhận: {name}")
+            if phone:
+                blocks.append(f"📞 SĐT: {phone}")
+            if full_address:
+                blocks.append(f"📍 Địa chỉ: {full_address}")
+            blocks.append("")
 
-            block.append(f"🧾 Mã đơn hàng: {order_id}")
+            # Sản phẩm
+            if products:
+                if len(products) == 1:
+                    p = products[0]
+                    pname = _safe_trim(p.get("name", ""), 90)
+                    blocks.append(f"🎁 Sản phẩm: {pname}")
+                else:
+                    for i, p in enumerate(products[:max_products_per_order], start=1):
+                        pname = _safe_trim(p.get("name", ""), 90)
+                        blocks.append(f"🎁 Sản phẩm {i}: {pname}")
+            else:
+                blocks.append("🎁 Sản phẩm: (không có dữ liệu)")
 
-            # Địa chỉ
-            if name or phone or full_address:
-                block.append("\n🏠 ĐỊA CHỈ NHẬN HÀNG")
-                if name:
-                    block.append(name)
-                if phone:
-                    block.append(phone)
-                if full_address:
-                    block.append(full_address)
+            # Đơn vị vận chuyển
+            blocks.append(f"🚛Đơn vị vận chuyển : {carrier_name if carrier_name else 'Không xác định'}")
 
-            # ===== SẢN PHẨM =====
-            for i, p in enumerate(products[:max_products_per_order], start=1):
-
-                pname = p.get("name", "")
-                amount = p.get("amount", "")
-                price = _fmt_money_from_api(p.get("order_price", 0))
-
-                # 🔥 ƯU TIÊN link API trả sẵn
-                link = (
-                    p.get("link")
-                    or p.get("product_url")
-                    or p.get("url")
-                )
-
-                # Nếu không có link thì tự build
-                if not link:
-                    shop_id = (
-                        p.get("shopid")
-                        or p.get("shop_id")
-                        or order.get("shopid")
-                        or order.get("shop_id")
-                    )
-                    item_id = p.get("itemid") or p.get("item_id")
-                    link = _build_shopee_link(shop_id, item_id)
-
-                block.append(f"\n🎁 SẢN PHẨM {i}")
-                block.append(f"Tên sản phẩm: {pname}")
-                if link:
-                    block.append(f"Liên kết: {link}")
-                block.append(f"SL: {amount}")
-                block.append(f"Giá: {price}")
-
-            # ===== VẬN CHUYỂN =====
+            # MVĐ + Link tra cứu
             if tracking:
-                block.append("\n🚚 ĐƠN VỊ VẬN CHUYỂN")
-                block.append(f"Đơn vị vận chuyển: {carrier_name}")
-                block.append(f"Mã vận đơn: {tracking}")
+                # MVĐ dạng code để tap/hold copy
+                blocks.append(f"📦 MVĐ: `{tracking}`")
 
-            # ===== THANH TOÁN ĐÚNG TỔNG TIỀN =====
-            payable_amount = (
-                order.get("payable_amount")
-                or order.get("total_amount")
-                or order.get("total_price")
-                or order.get("amount_to_pay")
-                or order.get("cod_amount")
-                or order.get("final_price")
-            )
+                track_url = build_tracking_url(tracking)
+                if track_url:
+                    blocks.append(f"🔗 Tra cứu: {track_url}")
+            else:
+                blocks.append("📦 MVĐ: (không có)")
 
-            if payable_amount:
-                block.append(
-                    f"💵 Vui lòng thanh toán {_fmt_money_from_api(payable_amount)} khi nhận hàng"
-                )
-
-            # ===== TÌNH TRẠNG LUÔN Ở CUỐI =====
+            # Trạng thái
             if status:
-                block.append(f"📌 Tình trạng: {status}")
+                blocks.append(f"📊 Trạng thái: {status}")
 
-            block.append("\n" + "-" * 30 + "\n")
-            text_blocks.append("\n".join(block))
+            blocks.append("————————————————————--")
 
-        full_text = "\n".join(text_blocks)
+        blocks.append("\nℹ️ Tap vào MVĐ để copy nhanh.")
 
+        full_text = "\n".join(blocks).strip()
+
+        # Cắt an toàn theo giới hạn Telegram
         while len(full_text) > 3500:
             messages.append(full_text[:3500])
             full_text = full_text[3500:]
