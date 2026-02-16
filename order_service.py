@@ -254,8 +254,11 @@ def format_orders_for_telegram(
 
             block_text = "\n".join([x for x in block_parts if x]).strip()
             blocks.append(block_text)
-            blocks.append("")  # dòng trống giữa các đơn
-
+            # Nếu có từ 2 đơn trở lên thì thêm gạch phân tách giữa các đơn (trừ đơn cuối đang hiển thị)
+            if len(orders) > 1 and shown < max_orders_per_cookie and idx < min(len(orders), max_orders_per_cookie):
+                blocks.append("---------------------------------------")
+            else:
+                blocks.append("")  # giữ dòng trống cho đẹp nếu chỉ có 1 đơn hoặc là đơn cuối
             shown += 1
 
         if len(orders) > shown:
