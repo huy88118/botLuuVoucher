@@ -87,7 +87,7 @@ def find_voucher_by_code(vouchers: List[Dict[str, Any]], code: str) -> Optional[
 
 
 # =======================
-# Handlers
+# Core handlers
 # =======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -95,7 +95,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu_keyboard()
     )
 
-async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Menu router (CHỈ 1 nơi xử lý nút) ---
+async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
 
     if text == "🔁 Convert SPC_F":
@@ -116,7 +117,6 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "📦 Check MVĐ":
         context.user_data["mode"] = "order_check"
-        # ✅ dùng HTML để khỏi lỗi parse entities
         await update.message.reply_text(
             "👉 Gửi cookie vào đây để <b>Check MVĐ / Đơn hàng</b> ...<br><br>"
             "⭐️ Hỗ trợ tối đa 10 cookie<br>"
@@ -229,7 +229,6 @@ async def receive_cookies_order(update: Update, context: ContextTypes.DEFAULT_TY
         data = await asyncio.to_thread(fetch_orders, cookies)
         messages = format_orders_for_telegram(data, max_orders_per_cookie=5)
 
-        # ✅ Order message trả về là HTML
         for msg in messages:
             await update.message.reply_text(
                 msg,
@@ -239,6 +238,7 @@ async def receive_cookies_order(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         await update.message.reply_text(f"❌ Lỗi: {e}")
 
+    context.user_data.pop("mode", None)
     return ConversationHandler.END
 
 
@@ -250,30 +250,21 @@ def main():
 
     bot_app = ApplicationBuilder().token(TOKEN).build()
 
-    conv_voucher = ConversationHandler(
-        entry_points=[CallbackQueryHandler(pick_callback, pattern=r"^(pick:|pick_all)")],
+    # 1) Router menu là entry chính
+    conv_main = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, menu_router)],
         states={
-            WAIT_COOKIES_VOUCHER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies_voucher)]
+            WAIT_COOKIES_VOUCHER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies_voucher)],
+            WAIT_COOKIES_ORDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies_order)],
         },
         fallbacks=[],
         allow_reentry=True,
     )
 
-    conv_order = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^📦 Check MVĐ$"), handle_menu)],
-        states={
-            WAIT_COOKIES_ORDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies_order)]
-        },
-        fallbacks=[],
-        allow_reentry=True,
-    )
-
+    # 2) Callback cho inline voucher (vẫn hoạt động ngoài conv)
     bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(conv_voucher)
-    bot_app.add_handler(conv_order)
-
-    # menu handler chung (cho các nút khác)
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu))
+    bot_app.add_handler(CallbackQueryHandler(pick_callback, pattern=r"^(pick:|pick_all)$"))
+    bot_app.add_handler(conv_main)
 
     print("✅ Bot đang chạy...")
     bot_app.run_polling(drop_pending_updates=True)
