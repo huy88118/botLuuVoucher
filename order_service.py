@@ -98,7 +98,6 @@ def build_tracking_url(tracking_number: str) -> Optional[str]:
 
 # ================= FORMATTER =================
 
-
 def format_orders_for_telegram(
     data: Dict[str, Any],
     max_orders_per_cookie: int = 10,
@@ -115,7 +114,7 @@ def format_orders_for_telegram(
         orders = account.get("orderDetails", []) or []
 
         if not orders:
-            messages.append(f"🍪 Cookie: {cookie[:20]}...\n❌ Không có đơn hàng.")
+            messages.append(f"🍪 Cookie: {cookie[:20]}...<br>❌ Không có đơn hàng.")
             continue
 
         blocks: List[str] = []
@@ -135,10 +134,8 @@ def format_orders_for_telegram(
 
             products = order.get("product_info", []) or []
 
-            blocks.append(f"\nĐƠN HÀNG {idx} : 🧾 Oder ID: {order_id}")
-
-            # THÔNG TIN (dùng chữ đậm unicode tránh parse_mode)
-            blocks.append("ℹ️ 𝐓𝐇Ô𝐍𝐆 𝐓𝐈𝐍")
+            blocks.append(f"<br><b>ĐƠN HÀNG {idx} : 🧾 Oder ID: {order_id}</b>")
+            blocks.append("ℹ️ <b>THÔNG TIN</b>")
             if name:
                 blocks.append(f"👤 Người nhận: {name}")
             if phone:
@@ -160,31 +157,28 @@ def format_orders_for_telegram(
             else:
                 blocks.append("🎁 Sản phẩm: (không có dữ liệu)")
 
-            # Đơn vị vận chuyển
-            blocks.append(f"🚛Đơn vị vận chuyển : {carrier_name if carrier_name else 'Không xác định'}")
+            # Vận chuyển
+            blocks.append(f"🚛 Đơn vị vận chuyển: {carrier_name if carrier_name else 'Không xác định'}")
 
-            # MVĐ + Link tra cứu
+            # MVĐ + link
             if tracking:
-                # MVĐ dạng code để tap/hold copy
-                blocks.append(f"📦 MVĐ: `{tracking}`")
+                blocks.append(f"📦 MVĐ: <code>{tracking}</code>")
 
                 track_url = build_tracking_url(tracking)
                 if track_url:
-                    blocks.append(f"🔗 Tra cứu: {track_url}")
+                    blocks.append(f"🔗 Tra cứu: <a href='{track_url}'>Mở trang tra cứu</a>")
             else:
                 blocks.append("📦 MVĐ: (không có)")
 
-            # Trạng thái
             if status:
                 blocks.append(f"📊 Trạng thái: {status}")
 
             blocks.append("————————————————————--")
 
-        blocks.append("\nℹ️ Tap vào MVĐ để copy nhanh.")
+        blocks.append("<br>ℹ️ Tap vào MVĐ để copy nhanh.")
 
-        full_text = "\n".join(blocks).strip()
+        full_text = "<br>".join(blocks).strip()
 
-        # Cắt an toàn theo giới hạn Telegram
         while len(full_text) > 3500:
             messages.append(full_text[:3500])
             full_text = full_text[3500:]
@@ -192,3 +186,4 @@ def format_orders_for_telegram(
         messages.append(full_text)
 
     return messages
+
