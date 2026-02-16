@@ -38,6 +38,7 @@ def run_web():
     port = int(os.getenv("PORT", "10000"))
     web_app.run(host="0.0.0.0", port=port)
 
+
 # =======================
 # Config
 # =======================
@@ -47,6 +48,7 @@ VOUCHERS_JSON_PATH = os.getenv("VOUCHERS_JSON_PATH", "vouchers.json")
 # Conversation states
 WAIT_COOKIES_VOUCHER = 1
 WAIT_COOKIES_ORDER = 2
+
 
 # =======================
 # UI
@@ -83,6 +85,7 @@ def find_voucher_by_code(vouchers: List[Dict[str, Any]], code: str) -> Optional[
             return v
     return None
 
+
 # =======================
 # Handlers
 # =======================
@@ -113,16 +116,19 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "📦 Check MVĐ":
         context.user_data["mode"] = "order_check"
+        # ✅ dùng HTML để khỏi lỗi parse entities
         await update.message.reply_text(
-            "👉 Gửi cookie vào đây để *Check MVĐ / Đơn hàng* ...\n\n"
-            "⭐️ Hỗ trợ tối đa 10 cookie\n"
+            "👉 Gửi cookie vào đây để <b>Check MVĐ / Đơn hàng</b> ...<br><br>"
+            "⭐️ Hỗ trợ tối đa 10 cookie<br>"
             "💡 Gửi mỗi cookie 1 dòng",
-            parse_mode="Markdown"
+            parse_mode="HTML",
+            disable_web_page_preview=True
         )
         return WAIT_COOKIES_ORDER
 
     await update.message.reply_text("❓ Bạn hãy bấm nút trong menu.")
     return ConversationHandler.END
+
 
 # --- Voucher pick callback ---
 async def pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -136,10 +142,11 @@ async def pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("picked_voucher", None)
 
         await query.message.reply_text(
-            "👉 Gửi cookie vào đây để lưu *TẤT CẢ* voucher ....\n\n"
-            "⭐️ Hỗ trợ lưu tối đa 10 cookie\n"
+            "👉 Gửi cookie vào đây để lưu <b>TẤT CẢ</b> voucher ....<br><br>"
+            "⭐️ Hỗ trợ lưu tối đa 10 cookie<br>"
             "💡 Gửi mỗi cookie 1 dòng",
-            parse_mode="Markdown"
+            parse_mode="HTML",
+            disable_web_page_preview=True
         )
         return WAIT_COOKIES_VOUCHER
 
@@ -159,12 +166,15 @@ async def pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["picked_voucher"] = picked
 
     await query.message.reply_text(
-        f"✅ Bạn đã chọn: {picked.get('display_name') or picked.get('voucher_code')}\n\n"
-        "👉 Gửi cookie vào đây để lưu voucher ....\n\n"
-        "⭐️ Hỗ trợ lưu tối đa 10 cookie\n"
-        "💡 Gửi mỗi cookie 1 dòng"
+        f"✅ Bạn đã chọn: {picked.get('display_name') or picked.get('voucher_code')}<br><br>"
+        "👉 Gửi cookie vào đây để lưu voucher ....<br><br>"
+        "⭐️ Hỗ trợ lưu tối đa 10 cookie<br>"
+        "💡 Gửi mỗi cookie 1 dòng",
+        parse_mode="HTML",
+        disable_web_page_preview=True
     )
     return WAIT_COOKIES_VOUCHER
+
 
 # --- Receive cookies for voucher ---
 async def receive_cookies_voucher(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -201,6 +211,7 @@ async def receive_cookies_voucher(update: Update, context: ContextTypes.DEFAULT_
     context.user_data.pop("picked_voucher", None)
     return ConversationHandler.END
 
+
 # --- Receive cookies for order check ---
 async def receive_cookies_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = (update.message.text or "").strip()
@@ -218,12 +229,18 @@ async def receive_cookies_order(update: Update, context: ContextTypes.DEFAULT_TY
         data = await asyncio.to_thread(fetch_orders, cookies)
         messages = format_orders_for_telegram(data, max_orders_per_cookie=5)
 
+        # ✅ Order message trả về là HTML
         for msg in messages:
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await update.message.reply_text(
+                msg,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
     except Exception as e:
         await update.message.reply_text(f"❌ Lỗi: {e}")
 
     return ConversationHandler.END
+
 
 def main():
     if not TOKEN:
@@ -235,14 +252,18 @@ def main():
 
     conv_voucher = ConversationHandler(
         entry_points=[CallbackQueryHandler(pick_callback, pattern=r"^(pick:|pick_all)")],
-        states={WAIT_COOKIES_VOUCHER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies_voucher)]},
+        states={
+            WAIT_COOKIES_VOUCHER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies_voucher)]
+        },
         fallbacks=[],
         allow_reentry=True,
     )
 
     conv_order = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"^📦 Check MVĐ$"), handle_menu)],
-        states={WAIT_COOKIES_ORDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies_order)]},
+        states={
+            WAIT_COOKIES_ORDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies_order)]
+        },
         fallbacks=[],
         allow_reentry=True,
     )
@@ -256,6 +277,7 @@ def main():
 
     print("✅ Bot đang chạy...")
     bot_app.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
