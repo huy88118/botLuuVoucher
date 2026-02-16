@@ -213,12 +213,14 @@ def format_orders_for_telegram(
             # ----- build UI block like screenshot -----
             block_parts: List[str] = []
 
-            # Title order
-            if order_id:
-                block_parts.append(f"\n📌 ĐƠN HÀNG {idx} :    Oder ID: {order_id}")
-            else:
-                block_parts.append(f"\n📌 ĐƠN HÀNG {idx} :")
 
+            # Title order (tách riêng Order ID ra 1 dòng)
+            block_parts.append(f"\n📌 ĐƠN HÀNG {idx} :")
+
+            if order_id:
+               block_parts.append(f"🧾 Order ID: {order_id}")
+
+        
             # Info section
             block_parts.append("ℹ️ THÔNG TIN")
             if name:
