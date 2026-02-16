@@ -1,7 +1,8 @@
-import requests
 import json
-from typing import List, Dict, Any, Optional
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import requests
 
 BASE_URL = "https://us-central1-get-feedback-a0119.cloudfunctions.net/app"
 API_ENDPOINT = "/api/shopee/getOrderDetailsForCookie"
@@ -13,6 +14,7 @@ HEADERS = {
     "Referer": "https://autopee.vercel.app/",
 }
 
+
 def fetch_orders(cookies_list: List[str]) -> Dict[str, Any]:
     url = BASE_URL + API_ENDPOINT
     payload = {"cookies": cookies_list}
@@ -21,19 +23,22 @@ def fetch_orders(cookies_list: List[str]) -> Dict[str, Any]:
         url,
         data=json.dumps(payload),
         headers=HEADERS,
-        timeout=60
+        timeout=60,
     )
     if response.status_code != 200:
         raise Exception(response.text)
     return response.json()
 
+
 # ---------------- helpers ----------------
+
 
 def _get(d: Dict[str, Any], keys: List[str], default=None):
     for k in keys:
         if k in d and d[k] not in (None, "", []):
             return d[k]
     return default
+
 
 def _fmt_ts(ts: Any) -> str:
     """
@@ -51,8 +56,8 @@ def _fmt_ts(ts: Any) -> str:
             ts = ts // 1000
         return datetime.fromtimestamp(ts).strftime("%d/%m/%Y %H:%M:%S")
     except Exception:
-        # string
         return str(ts)
+
 
 def _fmt_money_from_api(v: Any) -> str:
     """
@@ -64,6 +69,7 @@ def _fmt_money_from_api(v: Any) -> str:
     except Exception:
         return str(v)
 
+
 def _build_shopee_link(shop_id: Any, item_id: Any) -> Optional[str]:
     try:
         if shop_id and item_id:
@@ -72,11 +78,14 @@ def _build_shopee_link(shop_id: Any, item_id: Any) -> Optional[str]:
         pass
     return None
 
+
 def _safe_trim(s: Any, n: int) -> str:
     s = "" if s is None else str(s)
     return s if len(s) <= n else s[:n] + "…"
 
+
 # ---------------- formatter ----------------
+
 
 def detect_carrier(tracking_number: str) -> str:
     if not tracking_number:
@@ -97,11 +106,11 @@ def detect_carrier(tracking_number: str) -> str:
 
 
 def format_orders_for_telegram(
-    data,
+    data: Dict[str, Any],
     max_orders_per_cookie: int = 10,
     max_products_per_order: int = 5,
-):
-    messages = []
+) -> List[str]:
+    messages: List[str] = []
 
     accounts = data.get("allOrderDetails", [])
     if not accounts:
@@ -115,12 +124,11 @@ def format_orders_for_telegram(
             messages.append(f"🍪 Cookie: `{cookie[:20]}...`\n❌ Không có đơn hàng.")
             continue
 
-        text_blocks = []
+        text_blocks: List[str] = []
         header = f"🍪 Cookie: `{cookie[:20]}...`\n📦 Tổng đơn: {len(orders)}\n"
         text_blocks.append(header)
 
         for index, order in enumerate(orders[:max_orders_per_cookie], start=1):
-
             order_id = order.get("order_id", "")
             status = order.get("tracking_info_description", "")
             tracking = order.get("tracking_number", "")
@@ -135,9 +143,9 @@ def format_orders_for_telegram(
 
             products = order.get("product_info", []) or []
 
-            block = []
+            block: List[str] = []
             block.append(f"📦 Đơn {index} :")
-            
+
             # 👉 Thời gian đặt hàng lên đầu
             if order_time:
                 block.append(f"⏱ Thời gian đặt hàng: {order_time}")
@@ -156,7 +164,7 @@ def format_orders_for_telegram(
 
             # Sản phẩm
             for i, p in enumerate(products[:max_products_per_order], start=1):
-                pname = p.get("name", "")
+                pname = _safe_trim(p.get("name", ""), 120)
                 amount = p.get("amount", "")
                 price = _fmt_money_from_api(p.get("order_price", 0))
 
@@ -177,21 +185,22 @@ def format_orders_for_telegram(
                 block.append(f"Đơn vị vận chuyển: {carrier_name}")
                 block.append(f"Mã vận đơn: {tracking}")
 
-            # 👉 Tình trạng xuống cuối
-            if status:
-                block.append(f"\n📌 Tình trạng: {status}")
-
-            # Thanh toán
+            # Thanh toán (đưa lên trước)
             total_price = sum(
-                float(p.get("order_price", 0)) for p in products if p.get("order_price")
+                float(p.get("order_price", 0))
+                for p in products
+                if p.get("order_price") not in (None, "", 0)
             )
             if total_price:
                 block.append(
                     f"💵 Vui lòng thanh toán {_fmt_money_from_api(total_price)} khi nhận hàng"
                 )
 
-            block.append("\n" + "-" * 30 + "\n")
+            # 👉 Tình trạng để cuối cùng của đơn
+            if status:
+                block.append(f"📌 Tình trạng: {status}")
 
+            block.append("\n" + "-" * 30 + "\n")
             text_blocks.append("\n".join(block))
 
         full_text = "\n".join(text_blocks)
