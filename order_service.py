@@ -1,6 +1,6 @@
 import requests
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 BASE_URL = "https://us-central1-get-feedback-a0119.cloudfunctions.net/app"
@@ -12,6 +12,7 @@ HEADERS = {
     "Origin": "https://autopee.vercel.app",
     "Referer": "https://autopee.vercel.app/",
 }
+
 
 def fetch_orders(cookies_list: List[str]) -> Dict[str, Any]:
     url = BASE_URL + API_ENDPOINT
@@ -27,6 +28,7 @@ def fetch_orders(cookies_list: List[str]) -> Dict[str, Any]:
         raise Exception(response.text)
     return response.json()
 
+
 # ---------------- helpers ----------------
 
 def _get(d: Dict[str, Any], keys: List[str], default=None):
@@ -34,6 +36,7 @@ def _get(d: Dict[str, Any], keys: List[str], default=None):
         if k in d and d[k] not in (None, "", []):
             return d[k]
     return default
+
 
 def _fmt_ts(ts: Any) -> str:
     """
@@ -54,6 +57,7 @@ def _fmt_ts(ts: Any) -> str:
         # string
         return str(ts)
 
+
 def _fmt_money_from_api(v: Any) -> str:
     """
     Code Tkinter của bạn: order_price / 100000
@@ -64,6 +68,7 @@ def _fmt_money_from_api(v: Any) -> str:
     except Exception:
         return str(v)
 
+
 def _build_shopee_link(shop_id: Any, item_id: Any) -> Optional[str]:
     try:
         if shop_id and item_id:
@@ -72,9 +77,57 @@ def _build_shopee_link(shop_id: Any, item_id: Any) -> Optional[str]:
         pass
     return None
 
+
 def _safe_trim(s: Any, n: int) -> str:
     s = "" if s is None else str(s)
     return s if len(s) <= n else s[:n] + "…"
+
+
+def _split_address_for_ui(full_address: Any) -> Tuple[str, str]:
+    """
+    Tách địa chỉ cho UI giống ảnh:
+    - Dòng 1: phần địa chỉ chính
+    - Dòng 2: phần tỉnh/thành (nếu có)
+    """
+    s = "" if full_address is None else str(full_address).strip()
+    if not s:
+        return "", ""
+
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if len(parts) >= 2:
+        main = ", ".join(parts[:-1]).strip()
+        city = parts[-1].strip()
+        return main, city
+
+    return s, ""
+
+
+def _detect_carrier_from_tracking(tracking_id: Any) -> str:
+    """
+    Tự nhận diện đơn vị vận chuyển từ mã vận đơn (MVĐ).
+    Theo ví dụ bạn đưa:
+    - SPX... / SPXVN... => Shopee Express
+    - GY...            => Giao Hàng Nhanh
+
+    Nếu không nhận diện được thì trả "" để fallback sang carrier từ API.
+    """
+    t = "" if tracking_id is None else str(tracking_id).strip().upper()
+    if not t:
+        return ""
+
+    # Ưu tiên prefix dài hơn trước
+    prefix_map = [
+        ("SPXVN", "Shopee Express"),
+        ("SPX", "Shopee Express"),
+        ("GY", "Giao Hàng Nhanh"),
+    ]
+
+    for pref, name in prefix_map:
+        if t.startswith(pref):
+            return name
+
+    return ""
+
 
 # ---------------- formatter ----------------
 
@@ -84,13 +137,15 @@ def format_orders_for_telegram(
     max_products_per_order: int = 5,
 ) -> List[str]:
     """
-    Format gần giống ảnh:
-    - Tình trạng + dự kiến nhận
-    - Mã đơn + thời gian đặt
-    - Địa chỉ nhận
-    - Sản phẩm (tên, phân loại, link)
-    - Đơn vị vận chuyển + MVĐ
-    - Note thanh toán khi nhận (nếu tính được)
+    UI giống ảnh:
+    - 🍪 Cookie + Tổng đơn
+    - 📌 ĐƠN HÀNG i :  Oder ID
+    - ℹ️ THÔNG TIN (Người nhận / SDT / Địa chỉ / TP)
+    - 🎁 Sản phẩm (nếu nhiều sp -> Sản phẩm 1,2,...)
+    - 🚚 Đơn vị vận chuyển
+    - 🧾 MVD: `...` (để dễ bấm copy)
+    - 📊 Trạng thái
+    - Footer: ℹ️ Tap vào MVD để copy nhanh.
     """
     messages: List[str] = []
 
@@ -110,7 +165,7 @@ def format_orders_for_telegram(
         blocks.append(header)
 
         shown = 0
-        for order in orders:
+        for idx, order in enumerate(orders, start=1):
             if shown >= max_orders_per_cookie:
                 break
 
@@ -118,120 +173,95 @@ def format_orders_for_telegram(
             order_id = _get(order, ["order_id", "orderid", "id"], "")
             status = _get(order, ["tracking_info_description", "status_description", "status", "order_status"], "")
             tracking = _get(order, ["tracking_number", "tracking_no", "tracking"], "")
+            # order_time giữ lại nếu bạn muốn bật hiển thị (comment phía dưới)
             order_time = _fmt_ts(_get(order, ["create_time", "order_time", "ctime", "created_at"], ""))
-
-            # delivery estimation (nếu có)
-            eta = _get(order, ["estimated_delivery", "delivery_estimate", "delivery_window", "shipping_eta"], "")
-            eta_text = ""
-            if eta:
-                eta_text = f"\nTình trạng: {eta}"
 
             # ----- address -----
             address = order.get("address", {}) or {}
             name = _get(address, ["shipping_name", "name", "receiver_name"], "")
             phone = _get(address, ["shipping_phone", "phone", "receiver_phone"], "")
             full_address = _get(address, ["shipping_address", "address", "full_address"], "")
+            addr_main, addr_city = _split_address_for_ui(full_address)
 
             # ----- shipping -----
             shipping = order.get("shipping", {}) or {}
-            carrier = _get(shipping, ["shipping_carrier", "carrier"], "") or _get(order, ["shipping_carrier"], "")
+            carrier_api = _get(shipping, ["shipping_carrier", "carrier"], "") or _get(order, ["shipping_carrier"], "")
             tracking_id = _get(order, ["tracking_number"], tracking)
+
+            # Auto-detect carrier from tracking (ưu tiên độ chính xác theo MVĐ)
+            carrier_detected = _detect_carrier_from_tracking(tracking_id)
+            carrier = carrier_detected or carrier_api  # nếu detect được thì dùng detect, không thì fallback API
 
             # ----- products -----
             products = order.get("product_info", []) or order.get("products", []) or []
             prod_lines: List[str] = []
-            cod_total = 0.0
-            cod_has_value = False
 
             for p in products[:max_products_per_order]:
-                pname = _safe_trim(_get(p, ["name", "product_name", "title"], ""), 120)
+                pname = _safe_trim(_get(p, ["name", "product_name", "title"], ""), 160)
                 variation = _safe_trim(_get(p, ["model_name", "variation", "classification", "model"], ""), 80)
-                amount = _get(p, ["amount", "qty", "quantity"], "")
-                price_raw = _get(p, ["order_price", "price", "item_price"], None)
 
-                # link
-                shop_id = _get(p, ["shopid", "shop_id"], None) or _get(order, ["shopid", "shop_id"], None)
-                item_id = _get(p, ["itemid", "item_id"], None)
-                link = _get(p, ["link", "url", "product_url"], None) or _build_shopee_link(shop_id, item_id)
-
-                line = f"🎁 Tên sản phẩm: {pname}"
+                # UI gọn như ảnh: gộp tên + phân loại
+                line = pname
                 if variation:
-                    line += f"\nPhân loại: {variation}"
-                if link:
-                    line += f"\nLiên kết: {link}"
-                if amount not in ("", None):
-                    line += f"\nSL: {amount}"
-                if price_raw is not None:
-                    line += f"\nGiá: {_fmt_money_from_api(price_raw)}"
-                    try:
-                        cod_total += float(price_raw)
-                        cod_has_value = True
-                    except Exception:
-                        pass
+                    line += f" [{variation}]"
 
                 prod_lines.append(line)
 
             if len(products) > max_products_per_order:
                 prod_lines.append(f"(… +{len(products) - max_products_per_order} sản phẩm khác)")
 
-            # COD / payable
-            payable_line = ""
-            # nếu API có field riêng thì ưu tiên
-            payable_raw = _get(order, ["cod_amount", "payable_amount", "total_cod", "amount_to_pay"], None)
-            if payable_raw is not None:
-                payable_line = f"💵 Vui lòng thanh toán {_fmt_money_from_api(payable_raw)} khi nhận hàng"
-            elif cod_has_value:
-                payable_line = f"💵 Vui lòng thanh toán {_fmt_money_from_api(cod_total)} khi nhận hàng"
-
-            # ----- build message block like screenshot -----
+            # ----- build UI block like screenshot -----
             block_parts: List[str] = []
 
-            # Tình trạng + ETA
-            if status:
-                block_parts.append(f"📌 Tình trạng: {status}")
-            if eta_text:
-                block_parts.append(f"📌 {eta_text.replace('Tình trạng: ', 'Ngày nhận dự kiến: ')}")
-
+            # Title order
             if order_id:
-                block_parts.append(f"🧾 Mã đơn hàng: {order_id}")
-            if order_time:
-                block_parts.append(f"⏱ Thời gian đặt hàng: {order_time}")
+                block_parts.append(f"\n📌 ĐƠN HÀNG {idx} :    Oder ID: {order_id}")
+            else:
+                block_parts.append(f"\n📌 ĐƠN HÀNG {idx} :")
 
-            # Address section
-            if name or phone or full_address:
-                block_parts.append("\n🏠 ĐỊA CHỈ NHẬN HÀNG")
-                if name:
-                    block_parts.append(f"{name}")
-                if phone:
-                    block_parts.append(f"{phone}")
-                if full_address:
-                    block_parts.append(full_address)
+            # Info section
+            block_parts.append("ℹ️ THÔNG TIN")
+            if name:
+                block_parts.append(f"👤 Người nhận: {name}")
+            if phone:
+                block_parts.append(f"📞 SDT: {phone}")
+            if addr_main:
+                block_parts.append(f"📍 Địa chỉ: {addr_main}")
+            if addr_city:
+                prefix = "TP. " if not addr_city.lower().startswith(("tp", "thành phố", "tỉnh")) else ""
+                block_parts.append(f"{prefix}{addr_city}")
 
-            # Product sections
+            # Products section
             if prod_lines:
-                for i, pl in enumerate(prod_lines, start=1):
-                    block_parts.append(f"\n🎁 SẢN PHẨM {i}\n{pl}")
+                if len(prod_lines) == 1:
+                    block_parts.append(f"\n🎁 Sản phẩm: {prod_lines[0]}")
+                else:
+                    block_parts.append("\n🎁 Sản phẩm:")
+                    for i, pl in enumerate(prod_lines, start=1):
+                        block_parts.append(f"Sản phẩm {i} : {pl}")
 
-            # Shipping section
-            if carrier or tracking_id:
-                block_parts.append("\n🚚 ĐƠN VỊ VẬN CHUYỂN")
-                if carrier:
-                    block_parts.append(f"Đơn vị vận chuyển: {carrier}")
-                if tracking_id:
-                    block_parts.append(f"Mã vận đơn: {tracking_id}")
+            # Shipping + tracking + status (đúng thứ tự như ảnh)
+            if carrier:
+                block_parts.append(f"\n🚚 Đơn vị vận chuyển: {carrier}")
+            if tracking_id:
+                block_parts.append(f"🧾 MVD: `{tracking_id}`")
+            if status:
+                block_parts.append(f"📊 Trạng thái: {status}")
 
-            if payable_line:
-                block_parts.append(f"\n{payable_line}")
+            # Nếu bạn muốn hiện "Thời gian đặt hàng" thì bật dòng dưới (để cuối cho gọn)
+            # if order_time:
+            #     block_parts.append(f"⏱ Thời gian đặt hàng: {order_time}")
 
-            # divider
-            block_text = "\n".join([x for x in block_parts if x is not None and x != ""]).strip()
+            block_text = "\n".join([x for x in block_parts if x]).strip()
             blocks.append(block_text)
-            blocks.append("—" * 20)
+            blocks.append("")  # dòng trống giữa các đơn
 
             shown += 1
 
         if len(orders) > shown:
             blocks.append(f"… (ẩn {len(orders) - shown} đơn, tăng giới hạn nếu muốn)")
+
+        blocks.append("ℹ️ Tap vào MVD để copy nhanh.")
 
         # split into multiple telegram messages if too long
         full_text = "\n".join(blocks).strip()
