@@ -49,12 +49,50 @@ WAIT_COOKIES_VOUCHER = 1
 WAIT_COOKIES_ORDER = 2
 
 # =======================
+# Menu / Validation
+# =======================
+MENU_REGEX = r"^(🎟️ Lưu Voucher|📦 Check MVĐ|🔁 Convert SPC_F)$"
+
+def is_probably_shopee_cookie(s: str) -> bool:
+    """
+    Với nguồn API bạn đang dùng: CHỈ CẦN SPC_ST là đủ để check đơn.
+    Chấp nhận:
+    - "SPC_ST=...." (một mình)
+    - full cookie "key=value; key=value; ..." miễn là có SPC_ST=
+    """
+    if not s:
+        return False
+
+    t = s.strip()
+    if len(t) < 10:
+        return False
+
+    up = t.upper()
+
+    # Case 1: chỉ SPC_ST=...
+    if up.startswith("SPC_ST=") and len(t) > len("SPC_ST=") + 5:
+        return True
+
+    # Case 2: full cookie (SPC_ST nằm giữa chuỗi)
+    if "SPC_ST=" in up and "=" in t:
+        return True
+
+    return False
+
+def count_orders_from_api(data: Dict[str, Any]) -> int:
+    accs = data.get("allOrderDetails") or []
+    total = 0
+    for a in accs:
+        total += len(a.get("orderDetails") or [])
+    return total
+
+# =======================
 # UI
 # =======================
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("🔴 Lưu Voucher"), KeyboardButton("📦 Check MVĐ")],
+            [KeyboardButton("🎟️ Lưu Voucher"), KeyboardButton("📦 Check MVĐ")],
             [KeyboardButton("🔁 Convert SPC_F")],
         ],
         resize_keyboard=True
@@ -83,10 +121,16 @@ def find_voucher_by_code(vouchers: List[Dict[str, Any]], code: str) -> Optional[
             return v
     return None
 
+def reset_user_flow(context: ContextTypes.DEFAULT_TYPE):
+    # reset mọi “mode” để không bị kẹt khi đổi chức năng
+    context.user_data.pop("mode", None)
+    context.user_data.pop("picked_voucher", None)
+
 # =======================
 # Handlers
 # =======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_user_flow(context)
     await update.message.reply_text(
         "✅ Menu:\nChọn chức năng bên dưới:",
         reply_markup=main_menu_keyboard()
@@ -95,11 +139,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
 
+    # Bấm menu thì reset flow cũ trước (tránh kẹt state)
+    reset_user_flow(context)
+
     if text == "🔁 Convert SPC_F":
         await update.message.reply_text("🚧 Chức năng đang phát triển.")
         return ConversationHandler.END
 
-    if text == "🔴 Lưu Voucher":
+    if text == "🎟️ Lưu Voucher":
         vouchers = load_vouchers()
         if not vouchers:
             await update.message.reply_text("❌ Không có voucher trong vouchers.json")
@@ -116,7 +163,8 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "👉 Gửi cookie vào đây để *Check MVĐ / Đơn hàng* ...\n\n"
             "⭐️ Hỗ trợ tối đa 10 cookie\n"
-            "💡 Gửi mỗi cookie 1 dòng",
+            "💡 Gửi mỗi cookie 1 dòng\n\n"
+            "✅ API này chỉ cần `SPC_ST=...` là đủ.",
             parse_mode="Markdown"
         )
         return WAIT_COOKIES_ORDER
@@ -147,12 +195,12 @@ async def pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         _, code = data.split(":", 1)
     except ValueError:
-        await query.message.reply_text("❌ Lựa chọn không hợp lệ. Bấm '🔴 Lưu Voucher' để chọn lại.")
+        await query.message.reply_text("❌ Lựa chọn không hợp lệ. Bấm '🎟️ Lưu Voucher' để chọn lại.")
         return ConversationHandler.END
 
     picked = find_voucher_by_code(vouchers, code)
     if not picked:
-        await query.message.reply_text("❌ Voucher không còn trong danh sách. Bấm '🔴 Lưu Voucher' để tải lại.")
+        await query.message.reply_text("❌ Voucher không còn trong danh sách. Bấm '🎟️ Lưu Voucher' để tải lại.")
         return ConversationHandler.END
 
     context.user_data["mode"] = "voucher_one"
@@ -197,14 +245,15 @@ async def receive_cookies_voucher(update: Update, context: ContextTypes.DEFAULT_
             results.append(f"Cookie {i}: ❌ Lỗi {type(e).__name__}: {e}")
 
     await update.message.reply_text("\n\n".join(results))
-    context.user_data.pop("mode", None)
-    context.user_data.pop("picked_voucher", None)
+
+    reset_user_flow(context)
     return ConversationHandler.END
 
 # --- Receive cookies for order check ---
 async def receive_cookies_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = (update.message.text or "").strip()
     cookies = [line.strip() for line in raw.splitlines() if line.strip()]
+
     if not cookies:
         await update.message.reply_text("❌ Cookie trống. Gửi lại (mỗi cookie 1 dòng).")
         return WAIT_COOKIES_ORDER
@@ -212,17 +261,39 @@ async def receive_cookies_order(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ Tối đa 10 cookie. Bạn gửi lại giúp mình nhé (<=10 dòng).")
         return WAIT_COOKIES_ORDER
 
+    # Validate cookie trước khi gọi API (để không ra “Đang chờ” giả)
+    invalid = []
+    for i, c in enumerate(cookies, start=1):
+        if not is_probably_shopee_cookie(c):
+            invalid.append(f"- Dòng {i}: cookie sai định dạng (phải có `SPC_ST=`).")
+
+    if invalid:
+        await update.message.reply_text(
+            "❌ Cookie không hợp lệ:\n" + "\n".join(invalid) +
+            "\n\n✅ Gợi ý: gửi `SPC_ST=...` hoặc full cookie dạng `key=value; key=value; ...` (có SPC_ST=).",
+            parse_mode="Markdown"
+        )
+        return WAIT_COOKIES_ORDER
+
     await update.message.reply_text("⏳ Đang check đơn hàng...")
 
     try:
         data = await asyncio.to_thread(fetch_orders, cookies)
-        messages = format_orders_for_telegram(data, max_orders_per_cookie=5)
 
+        # Nếu API trả rỗng -> báo cookie sai/hết hạn
+        if count_orders_from_api(data) == 0:
+            await update.message.reply_text("❌ Không tìm thấy đơn hàng. Cookie có thể sai hoặc đã hết hạn.")
+            reset_user_flow(context)
+            return ConversationHandler.END
+
+        messages = format_orders_for_telegram(data, max_orders_per_cookie=5)
         for msg in messages:
             await update.message.reply_text(msg, parse_mode="Markdown")
+
     except Exception as e:
         await update.message.reply_text(f"❌ Lỗi: {e}")
 
+    reset_user_flow(context)
     return ConversationHandler.END
 
 def main():
@@ -233,16 +304,30 @@ def main():
 
     bot_app = ApplicationBuilder().token(TOKEN).build()
 
+    # IMPORTANT:
+    # - Exclude menu buttons from cookie receivers, so menu click won't be treated as cookie input.
+    menu_filter = filters.Regex(MENU_REGEX)
+
     conv_voucher = ConversationHandler(
         entry_points=[CallbackQueryHandler(pick_callback, pattern=r"^(pick:|pick_all)")],
-        states={WAIT_COOKIES_VOUCHER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies_voucher)]},
+        states={
+            WAIT_COOKIES_VOUCHER: [
+                MessageHandler((filters.TEXT & ~filters.COMMAND & ~menu_filter), receive_cookies_voucher),
+                MessageHandler(menu_filter, handle_menu),  # bấm menu là nhảy mode
+            ]
+        },
         fallbacks=[],
         allow_reentry=True,
     )
 
     conv_order = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"^📦 Check MVĐ$"), handle_menu)],
-        states={WAIT_COOKIES_ORDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookies_order)]},
+        states={
+            WAIT_COOKIES_ORDER: [
+                MessageHandler((filters.TEXT & ~filters.COMMAND & ~menu_filter), receive_cookies_order),
+                MessageHandler(menu_filter, handle_menu),  # bấm menu là nhảy mode
+            ]
+        },
         fallbacks=[],
         allow_reentry=True,
     )
