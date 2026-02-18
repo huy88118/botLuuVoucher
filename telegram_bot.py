@@ -2,6 +2,7 @@ import os
 import json
 import threading
 import asyncio
+import re
 from typing import List, Dict, Any, Optional
 
 from flask import Flask
@@ -52,38 +53,62 @@ WAIT_COOKIES_ORDER = 2
 # Menu / Validation
 # =======================
 MENU_REGEX = r"^(🎟️ Lưu Voucher|📦 Check MVĐ|🔁 Convert SPC_F)$"
+menu_filter = filters.Regex(MENU_REGEX)
+
+# Bắt buộc có SPC_ST=... (value đủ dài) dù đứng 1 mình hay nằm trong full cookie
+# - group 2: value của SPC_ST
+SPC_ST_PATTERN = re.compile(r"(?:^|;\s*)SPC_ST=([^;]{15,})", re.IGNORECASE)
 
 def is_probably_shopee_cookie(s: str) -> bool:
     """
-    Với nguồn API bạn đang dùng: CHỈ CẦN SPC_ST là đủ để check đơn.
-    Chấp nhận:
-    - "SPC_ST=...." (một mình)
-    - full cookie "key=value; key=value; ..." miễn là có SPC_ST=
+    API này chỉ cần SPC_ST, nhưng phải đúng định dạng:
+    - Có 'SPC_ST='
+    - Value tối thiểu 15 ký tự (tránh gõ bừa 1-2 ký tự vẫn lọt)
     """
     if not s:
         return False
-
     t = s.strip()
-    if len(t) < 10:
+    if len(t) < 20:
+        return False
+    return SPC_ST_PATTERN.search(t) is not None
+
+def _get_any(d: Dict[str, Any], keys: List[str], default=None):
+    for k in keys:
+        if k in d and d[k] not in (None, "", [], {}):
+            return d[k]
+    return default
+
+def is_real_order(order: Dict[str, Any]) -> bool:
+    """
+    Chặn trường hợp API trả placeholder kiểu "Đang chờ" khi cookie sai/hết hạn.
+    Đơn THẬT khi có ít nhất 1 dấu hiệu:
+    - order_id
+    - tracking_number
+    - có products/product_info và product name thật
+    """
+    if not isinstance(order, dict):
         return False
 
-    up = t.upper()
+    order_id = _get_any(order, ["order_id", "orderid", "id"], "")
+    tracking = _get_any(order, ["tracking_number", "tracking_no", "tracking"], "")
 
-    # Case 1: chỉ SPC_ST=...
-    if up.startswith("SPC_ST=") and len(t) > len("SPC_ST=") + 5:
-        return True
+    products = order.get("product_info") or order.get("products") or []
+    has_product = False
+    if isinstance(products, list) and products:
+        p0 = products[0] if isinstance(products[0], dict) else {}
+        pname = _get_any(p0, ["name", "product_name", "title"], "")
+        has_product = bool(pname)
 
-    # Case 2: full cookie (SPC_ST nằm giữa chuỗi)
-    if "SPC_ST=" in up and "=" in t:
-        return True
+    return bool(order_id) or bool(tracking) or has_product
 
-    return False
-
-def count_orders_from_api(data: Dict[str, Any]) -> int:
+def count_real_orders_from_api(data: Dict[str, Any]) -> int:
     accs = data.get("allOrderDetails") or []
     total = 0
     for a in accs:
-        total += len(a.get("orderDetails") or [])
+        orders = a.get("orderDetails") or []
+        for od in orders:
+            if is_real_order(od):
+                total += 1
     return total
 
 # =======================
@@ -221,6 +246,7 @@ async def receive_cookies_voucher(update: Update, context: ContextTypes.DEFAULT_
 
     raw = (update.message.text or "").strip()
     cookies = [line.strip() for line in raw.splitlines() if line.strip()]
+
     if not cookies:
         await update.message.reply_text("❌ Cookie trống. Gửi lại (mỗi cookie 1 dòng).")
         return WAIT_COOKIES_VOUCHER
@@ -261,16 +287,16 @@ async def receive_cookies_order(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ Tối đa 10 cookie. Bạn gửi lại giúp mình nhé (<=10 dòng).")
         return WAIT_COOKIES_ORDER
 
-    # Validate cookie trước khi gọi API (để không ra “Đang chờ” giả)
+    # Validate cookie trước khi gọi API (chặn gõ bừa)
     invalid = []
     for i, c in enumerate(cookies, start=1):
         if not is_probably_shopee_cookie(c):
-            invalid.append(f"- Dòng {i}: cookie sai định dạng (phải có `SPC_ST=`).")
+            invalid.append(f"- Dòng {i}: sai định dạng (phải có `SPC_ST=...`).")
 
     if invalid:
         await update.message.reply_text(
             "❌ Cookie không hợp lệ:\n" + "\n".join(invalid) +
-            "\n\n✅ Gợi ý: gửi `SPC_ST=...` hoặc full cookie dạng `key=value; key=value; ...` (có SPC_ST=).",
+            "\n\n✅ Gợi ý: gửi `SPC_ST=...` hoặc full cookie nhưng phải chứa `SPC_ST=...`.",
             parse_mode="Markdown"
         )
         return WAIT_COOKIES_ORDER
@@ -280,9 +306,12 @@ async def receive_cookies_order(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         data = await asyncio.to_thread(fetch_orders, cookies)
 
-        # Nếu API trả rỗng -> báo cookie sai/hết hạn
-        if count_orders_from_api(data) == 0:
-            await update.message.reply_text("❌ Không tìm thấy đơn hàng. Cookie có thể sai hoặc đã hết hạn.")
+        # CHỐT: Nếu không có "đơn thật" => cookie sai/hết hạn/placeholder
+        if count_real_orders_from_api(data) == 0:
+            await update.message.reply_text(
+                "❌ Cookie sai / hết hạn hoặc API không trả dữ liệu đơn hợp lệ.\n"
+                "👉 Hãy lấy lại `SPC_ST` mới và thử lại."
+            )
             reset_user_flow(context)
             return ConversationHandler.END
 
@@ -304,16 +333,13 @@ def main():
 
     bot_app = ApplicationBuilder().token(TOKEN).build()
 
-    # IMPORTANT:
-    # - Exclude menu buttons from cookie receivers, so menu click won't be treated as cookie input.
-    menu_filter = filters.Regex(MENU_REGEX)
-
     conv_voucher = ConversationHandler(
         entry_points=[CallbackQueryHandler(pick_callback, pattern=r"^(pick:|pick_all)")],
         states={
             WAIT_COOKIES_VOUCHER: [
+                # Không để menu bị coi là cookie
                 MessageHandler((filters.TEXT & ~filters.COMMAND & ~menu_filter), receive_cookies_voucher),
-                MessageHandler(menu_filter, handle_menu),  # bấm menu là nhảy mode
+                MessageHandler(menu_filter, handle_menu),
             ]
         },
         fallbacks=[],
@@ -324,8 +350,9 @@ def main():
         entry_points=[MessageHandler(filters.Regex(r"^📦 Check MVĐ$"), handle_menu)],
         states={
             WAIT_COOKIES_ORDER: [
+                # Không để menu bị coi là cookie
                 MessageHandler((filters.TEXT & ~filters.COMMAND & ~menu_filter), receive_cookies_order),
-                MessageHandler(menu_filter, handle_menu),  # bấm menu là nhảy mode
+                MessageHandler(menu_filter, handle_menu),
             ]
         },
         fallbacks=[],
