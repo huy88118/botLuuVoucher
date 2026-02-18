@@ -190,7 +190,6 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⭐️ Hỗ trợ tối đa 10 cookie\n"
             "💡 Gửi mỗi cookie 1 dòng\n\n"
             "🍪 Gửi đúng Cookie định dạng SPC_ST=....",
-            parse_mode="Markdown"
         )
         return WAIT_COOKIES_ORDER
 
@@ -297,7 +296,6 @@ async def receive_cookies_order(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(
             "❌ Cookie không hợp lệ:\n" + "\n".join(invalid) +
             "\n\n🍪 Gửi đúng Cookie định dạng SPC_ST=....",
-            parse_mode="Markdown"
         )
         return WAIT_COOKIES_ORDER
 
